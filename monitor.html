@@ -1,0 +1,244 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Monitor GPS - Stellantis</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Arial,sans-serif;background:#f1f3f5;color:#20252b}
+header{
+ background:#183b63;color:white;padding:18px 22px;
+ display:flex;justify-content:space-between;align-items:center;
+ flex-wrap:wrap;gap:10px
+}
+header h1{font-size:22px}
+header p{font-size:13px;opacity:.8;margin-top:5px}
+.connection{font-size:13px;background:#ffffff20;padding:9px 12px;border-radius:20px}
+main{padding:18px;max-width:1500px;margin:auto}
+.summary{
+ display:grid;grid-template-columns:repeat(3,1fr);
+ gap:12px;margin-bottom:15px
+}
+.card{
+ background:white;padding:17px;border-radius:12px;
+ box-shadow:0 2px 8px #0001
+}
+.card span{display:block;color:#777;font-size:13px}
+.card strong{display:block;font-size:26px;margin-top:7px}
+#map{
+ height:65vh;min-height:400px;background:#ddd;
+ border-radius:12px;overflow:hidden
+}
+.section-title{margin:20px 0 12px;font-size:18px}
+#vehicles{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.vehicle{
+ background:white;padding:16px;border-radius:11px;
+ border-left:5px solid #198754;box-shadow:0 2px 8px #0001;
+ cursor:pointer
+}
+.vehicle h3{font-size:16px;margin-bottom:9px}
+.vehicle p{font-size:13px;color:#555;line-height:1.8}
+.empty{
+ background:white;padding:25px;text-align:center;
+ border-radius:10px;color:#777
+}
+@media(max-width:600px){
+ .summary{grid-template-columns:1fr}
+ #map{height:55vh;min-height:350px}
+}
+</style>
+</head>
+
+<body>
+
+<header>
+ <div>
+  <h1>STELLANTIS | GPS INDUSTRIAL</h1>
+  <p>Monitor de autoelevadores en tiempo real</p>
+ </div>
+ <div class="connection" id="connection">● Conectando...</div>
+</header>
+
+<main>
+ <div class="summary">
+  <div class="card">
+   <span>Autoelevadores activos</span>
+   <strong id="total">0</strong>
+  </div>
+  <div class="card">
+   <span>Conexión</span>
+   <strong id="status" style="font-size:19px">Conectando</strong>
+  </div>
+  <div class="card">
+   <span>Última actualización</span>
+   <strong id="updated" style="font-size:19px">--:--:--</strong>
+  </div>
+ </div>
+
+ <div id="map"></div>
+
+ <h2 class="section-title">Autoelevadores conectados</h2>
+ <div id="vehicles">
+  <div class="empty">Esperando posiciones GPS...</div>
+ </div>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+const WS_URL = "wss://gps-industrial-servidor.onrender.com/ws";
+
+const map = L.map("map").setView([-34.60,-58.38],11);
+
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{
+ maxZoom:19,
+ attribution:"&copy; OpenStreetMap"
+}).addTo(map);
+
+const markers = {};
+let socket = null;
+let reconnectTimer = null;
+let primeraVista = true;
+
+function conectar(){
+ socket = new WebSocket(WS_URL);
+
+ socket.onopen = ()=>{
+  document.getElementById("connection").textContent="● Conectado";
+  document.getElementById("status").textContent="En línea";
+ };
+
+ socket.onmessage = event=>{
+  let data;
+  try{data=JSON.parse(event.data)}catch(e){return}
+
+  if(data.type==="vehicles"){
+   actualizar(data.vehicles || []);
+  }
+ };
+
+ socket.onerror = ()=>{
+  document.getElementById("connection").textContent="● Error";
+ };
+
+ socket.onclose = ()=>{
+  document.getElementById("connection").textContent="● Desconectado";
+  document.getElementById("status").textContent="Sin conexión";
+
+  clearTimeout(reconnectTimer);
+  reconnectTimer=setTimeout(conectar,3000);
+ };
+}
+
+function actualizar(vehicles){
+ const container=document.getElementById("vehicles");
+ const activos=new Set();
+
+ document.getElementById("total").textContent=vehicles.length;
+ document.getElementById("updated").textContent=new Date().toLocaleTimeString();
+
+ if(vehicles.length===0){
+  container.innerHTML='<div class="empty">No hay autoelevadores enviando ubicación actualmente.</div>';
+ }
+
+ vehicles.forEach(v=>{
+  activos.add(v.vehicleId);
+
+  const lat=Number(v.lat);
+  const lng=Number(v.lng);
+
+  if(!Number.isFinite(lat)||!Number.isFinite(lng))return;
+
+  const nombre=escapar(v.vehicleId || "Sin identificación");
+  const operador=escapar(v.operator || "No informado");
+  const velocidad=v.speed==null
+   ?"No disponible"
+   :(Number(v.speed)*3.6).toFixed(1)+" km/h";
+  const precision=v.accuracy==null
+   ?"No disponible"
+   :Math.round(v.accuracy)+" metros";
+  const hora=v.receivedAt
+   ?new Date(v.receivedAt).toLocaleTimeString()
+   :new Date().toLocaleTimeString();
+
+  const popup=`
+   <b>${nombre}</b><br>
+   Operario: ${operador}<br>
+   Velocidad: ${velocidad}<br>
+   Precisión: ${precision}<br>
+   Actualización: ${hora}
+  `;
+
+  if(!markers[v.vehicleId]){
+   markers[v.vehicleId]=L.marker([lat,lng]).addTo(map);
+  }else{
+   markers[v.vehicleId].setLatLng([lat,lng]);
+  }
+
+  markers[v.vehicleId].bindPopup(popup);
+
+  let card=document.getElementById("vehicle-"+encodeURIComponent(v.vehicleId));
+
+  if(!card){
+   card=document.createElement("div");
+   card.className="vehicle";
+   card.id="vehicle-"+encodeURIComponent(v.vehicleId);
+   container.appendChild(card);
+  }
+
+  card.innerHTML=`
+   <h3>🚜 ${nombre}</h3>
+   <p>
+    Operario: ${operador}<br>
+    Velocidad: ${velocidad}<br>
+    Precisión GPS: ${precision}<br>
+    Última lectura: ${hora}
+   </p>
+  `;
+
+  card.onclick=()=>{
+   map.setView([lat,lng],18);
+   markers[v.vehicleId].openPopup();
+  };
+
+  if(primeraVista){
+   map.setView([lat,lng],16);
+   primeraVista=false;
+  }
+ });
+
+ Object.keys(markers).forEach(id=>{
+  if(!activos.has(id)){
+   map.removeLayer(markers[id]);
+   delete markers[id];
+  }
+ });
+
+ document.querySelectorAll(".vehicle").forEach(card=>{
+  const id=decodeURIComponent(card.id.replace("vehicle-",""));
+  if(!activos.has(id))card.remove();
+ });
+
+ if(vehicles.length===0)primeraVista=true;
+}
+
+function escapar(valor){
+ return String(valor).replace(/[&<>"']/g,c=>({
+  "&":"&amp;",
+  "<":"&lt;",
+  ">":"&gt;",
+  '"':"&quot;",
+  "'":"&#39;"
+ })[c]);
+}
+
+conectar();
+</script>
+
+</body>
+</html>
