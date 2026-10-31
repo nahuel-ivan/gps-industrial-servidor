@@ -1,1 +1,14 @@
 
+{
+  "name": "gps-industrial-stellantis",
+  "version": "1.0.0",
+  "description": "Servidor GPS en tiempo real",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}
+
